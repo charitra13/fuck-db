@@ -1,0 +1,349 @@
+"use client"
+
+import { useState } from "react"
+import { ChevronRight, ChevronDown, TableIcon, Database, Box, Layers, Package, Plus, Trash2, Edit2 } from "lucide-react"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { VersionSwitcher } from "./version-switcher"
+import { SidebarToolbar } from "./sidebar-toolbar"
+import { VersionHistory } from "../version-history"
+import { InlineEdit } from "@/components/ui/inline-edit"
+import type { Project, Schema, Table } from "@/lib/api"
+import { cn } from "@/lib/utils"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
+
+interface ExplorerSidebarEditableProps {
+  project: Project
+  schemas: Record<string, Schema>
+  onTableClick: (schemaName: string, tableName: string, table: Table) => void
+  activeTableId: string | null
+  currentVersion?: number | null
+  versionRow?: { version: number; name?: string; description?: string } | null
+  onCreateVersion: () => void
+  onVersionChange: (version: number) => Promise<void>
+  onCreateTable: () => void
+  onDeleteTable?: (schemaName: string, tableName: string) => void
+  onRenameTable?: (schemaName: string, oldName: string, newName: string) => Promise<void>
+  onRenameSchema?: (oldName: string, newName: string) => Promise<void>
+  isRefreshing?: boolean
+  hasUnsavedChanges?: boolean
+}
+
+// Table type icons
+const TABLE_TYPE_ICONS = {
+  fact: { icon: Database, color: "text-blue-500" },
+  dimension: { icon: Box, color: "text-green-500" },
+  bridge: { icon: Layers, color: "text-orange-500" },
+  staging: { icon: Package, color: "text-gray-500" },
+  default: { icon: TableIcon, color: "text-muted-foreground" }
+}
+
+export function ExplorerSidebarEditable({ 
+  project, 
+  schemas, 
+  onTableClick, 
+  activeTableId, 
+  currentVersion, 
+  versionRow, 
+  onCreateVersion, 
+  onVersionChange,
+  onCreateTable,
+  onDeleteTable,
+  onRenameTable,
+  onRenameSchema,
+  isRefreshing,
+  hasUnsavedChanges = false
+}: ExplorerSidebarEditableProps) {
+  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(new Set(Object.keys(schemas)))
+  const [activeView, setActiveView] = useState<"explorer" | "history" | "settings">("explorer")
+  const [editingItem, setEditingItem] = useState<string | null>(null)
+
+  const toggleSchema = (schemaName: string) => {
+    const newExpanded = new Set(expandedSchemas)
+    if (newExpanded.has(schemaName)) {
+      newExpanded.delete(schemaName)
+    } else {
+      newExpanded.add(schemaName)
+    }
+    setExpandedSchemas(newExpanded)
+  }
+
+  const getTableIcon = (type: string) => {
+    const config = TABLE_TYPE_ICONS[type as keyof typeof TABLE_TYPE_ICONS] || TABLE_TYPE_ICONS.default
+    const Icon = config.icon
+    return <Icon className={cn("h-3 w-3", config.color)} />
+  }
+
+  const getTableTypeBadgeVariant = (type: string): "default" | "secondary" | "outline" | "destructive" => {
+    switch (type) {
+      case "fact": return "default"
+      case "dimension": return "secondary"
+      case "bridge": return "outline"
+      default: return "outline"
+    }
+  }
+
+  const handleSchemaRename = async (oldName: string, newName: string) => {
+    if (onRenameSchema && oldName !== newName) {
+      try {
+        await onRenameSchema(oldName, newName)
+        setEditingItem(null)
+      } catch (error) {
+        console.error("Failed to rename schema:", error)
+      }
+    } else {
+      setEditingItem(null)
+    }
+  }
+
+  const handleTableRename = async (schemaName: string, oldName: string, newName: string) => {
+    if (onRenameTable && oldName !== newName) {
+      try {
+        await onRenameTable(schemaName, oldName, newName)
+        setEditingItem(null)
+      } catch (error) {
+        console.error("Failed to rename table:", error)
+      }
+    } else {
+      setEditingItem(null)
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col bg-sidebar">
+      {/* Toolbar */}
+      <SidebarToolbar
+        activeView={activeView}
+        onViewChange={setActiveView}
+        onCreateTable={onCreateTable}
+      />
+
+      {/* Version Switcher */}
+      <div className="border-b border-sidebar-border p-2">
+        <VersionSwitcher
+          projectId={project.id}
+          currentVersion={currentVersion || null}
+          onVersionChange={onVersionChange}
+          onCreateVersion={onCreateVersion}
+          isModified={hasUnsavedChanges}
+          className="w-full"
+        />
+      </div>
+
+      {/* Content based on active view */}
+      {activeView === "explorer" && (
+        <ScrollArea className="flex-1">
+          <div className="p-2">
+            {Object.keys(schemas).length === 0 ? (
+              <div className="p-4 text-center text-xs text-sidebar-foreground/60">
+                <p>No schemas found</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2 h-7 text-xs"
+                  onClick={onCreateTable}
+                >
+                  Create your first table
+                </Button>
+              </div>
+            ) : (
+              Object.entries(schemas).map(([schemaKey, schema]) => {
+                const isExpanded = expandedSchemas.has(schemaKey)
+                const isEditingSchema = editingItem === `schema-${schemaKey}`
+
+                return (
+                  <div key={schemaKey} className="mb-2">
+                    <ContextMenu>
+                      <ContextMenuTrigger>
+                        <div className="group flex items-center">
+                          {isEditingSchema ? (
+                            <div className="flex-1 flex items-center gap-2 px-2 py-1">
+                              {isExpanded ? (
+                                <ChevronDown className="h-3 w-3" />
+                              ) : (
+                                <ChevronRight className="h-3 w-3" />
+                              )}
+                              <InlineEdit
+                                value={schemaKey}
+                                onSave={(newName) => handleSchemaRename(schemaKey, newName)}
+                                placeholder="Schema name"
+                                className="flex-1"
+                              />
+                            </div>
+                          ) : (
+                            <>
+                              <Button
+                                variant="ghost"
+                                onClick={() => toggleSchema(schemaKey)}
+                                className="flex-1 justify-start gap-2 h-8 text-sidebar-foreground hover:bg-sidebar-accent"
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="h-3 w-3" />
+                                ) : (
+                                  <ChevronRight className="h-3 w-3" />
+                                )}
+                                <span className="text-xs font-medium">{schema.name}</span>
+                                <span className="ml-auto text-xs text-sidebar-foreground/60">
+                                  {Object.keys(schema.tables).length}
+                                </span>
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => setEditingItem(`schema-${schemaKey}`)}
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent>
+                        <ContextMenuItem onClick={() => setEditingItem(`schema-${schemaKey}`)}>
+                          Rename Schema
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={onCreateTable}>
+                          Add Table
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    </ContextMenu>
+
+                    {isExpanded && (
+                      <div className="ml-4 mt-1 space-y-0.5">
+                        {Object.entries(schema.tables).map(([tableKey, table]) => {
+                          const tableId = `${schemaKey}.${tableKey}`
+                          const isActive = activeTableId === tableId
+                          const isEditingTable = editingItem === `table-${tableId}`
+
+                          return (
+                            <ContextMenu key={tableKey}>
+                              <ContextMenuTrigger>
+                                <div
+                                  className={cn(
+                                    "group flex items-center rounded",
+                                    isActive && "bg-sidebar-accent"
+                                  )}
+                                >
+                                  {isEditingTable ? (
+                                    <div className="flex-1 flex items-center gap-2 px-2 py-1 pl-4">
+                                      {getTableIcon(table.type)}
+                                      <InlineEdit
+                                        value={tableKey}
+                                        onSave={(newName) => handleTableRename(schemaKey, tableKey, newName)}
+                                        placeholder="Table name"
+                                        className="flex-1 font-mono text-xs"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <Button
+                                        variant="ghost"
+                                        onClick={() => onTableClick(schemaKey, tableKey, table)}
+                                        className={cn(
+                                          "flex-1 justify-start gap-2 h-7 pl-2 text-sidebar-foreground hover:bg-sidebar-accent",
+                                          isActive && "font-medium",
+                                        )}
+                                      >
+                                        {getTableIcon(table.type)}
+                                        <span className="flex-1 truncate text-left font-mono text-xs">
+                                          {table.name}
+                                        </span>
+                                        <Badge 
+                                          variant={getTableTypeBadgeVariant(table.type)} 
+                                          className="text-[9px] px-1 h-4"
+                                        >
+                                          {table.type.substring(0, 3).toUpperCase()}
+                                        </Badge>
+                                      </Button>
+                                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex">
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-6 w-6"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setEditingItem(`table-${tableId}`)
+                                          }}
+                                        >
+                                          <Edit2 className="h-3 w-3" />
+                                        </Button>
+                                        {onDeleteTable && (
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-6 w-6"
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              if (window.confirm(`Delete table "${table.name}"?`)) {
+                                                onDeleteTable(schemaKey, tableKey)
+                                              }
+                                            }}
+                                          >
+                                            <Trash2 className="h-3 w-3 text-destructive" />
+                                          </Button>
+                                        )}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              </ContextMenuTrigger>
+                              <ContextMenuContent>
+                                <ContextMenuItem onClick={() => setEditingItem(`table-${tableId}`)}>
+                                  Rename Table
+                                </ContextMenuItem>
+                                <ContextMenuItem onClick={() => onTableClick(schemaKey, tableKey, table)}>
+                                  Open Table
+                                </ContextMenuItem>
+                                {onDeleteTable && (
+                                  <ContextMenuItem 
+                                    className="text-destructive"
+                                    onClick={() => {
+                                      if (window.confirm(`Delete table "${table.name}"?`)) {
+                                        onDeleteTable(schemaKey, tableKey)
+                                      }
+                                    }}
+                                  >
+                                    Delete Table
+                                  </ContextMenuItem>
+                                )}
+                              </ContextMenuContent>
+                            </ContextMenu>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </ScrollArea>
+      )}
+
+      {activeView === "history" && (
+        <ScrollArea className="flex-1">
+          <VersionHistory
+            projectId={project.id}
+            currentVersion={currentVersion}
+            onVersionSelect={onVersionChange}
+          />
+        </ScrollArea>
+      )}
+
+      {activeView === "settings" && (
+        <ScrollArea className="flex-1">
+          <div className="p-4 text-sm text-sidebar-foreground/60">
+            <p>Settings panel coming soon...</p>
+          </div>
+        </ScrollArea>
+      )}
+    </div>
+  )
+}
